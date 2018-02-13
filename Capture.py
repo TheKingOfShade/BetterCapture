@@ -9,7 +9,7 @@ class Device:
         self.mac = None
         self.mac = mac
         self.ip = None
-        self.oui = None
+        self.oui = get_oui(mac)
         self.frame_numbers = None
 
     def show(self):
@@ -156,8 +156,9 @@ def process_arp(num, packet):
 
 def process_http(num, packet):
     mac = packet[Dot11].addr2
-    dev = find_device(mac)
-
+    if mac not in ClientDict.keys():
+        ClientDict[mac] = Client(mac)
+    dev = ClientDict[mac]
     load = packet[6].load
     load_list = load.decode('utf-8').split('\n')
     print(load_list)
@@ -181,9 +182,19 @@ def find_device(mac):
         DeviceDict[mac] = Device(mac)
         dev = DeviceDict[mac]
     return dev
-
-
 # TODO take in a default device type and have it return that instead of just device
+
+
+def get_oui(mac):
+    with open('betterOUI', 'r') as OUI:
+        mac = str(mac).upper()
+        mac = mac.replace(':', '')
+        mac = mac[:6]
+        for line in OUI:
+            line = line.split('~')
+            if line[0] == mac:
+                return line[1].strip()
+
 
 packet_num = 0
 for packet in cap:
@@ -195,3 +206,6 @@ for packet in cap:
     elif TCP in packet:
         if packet[TCP].dport == 80:
             packet.show()
+
+for k, v in AccessPointDict.items():
+    v.show()
