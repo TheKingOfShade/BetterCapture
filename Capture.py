@@ -1,3 +1,5 @@
+import csv
+
 from httpagentparser import *
 from scapy.all import *
 from scapy.layers.dot11 import Dot11, Dot11Beacon, ARP
@@ -39,6 +41,7 @@ class Client(Device):
         Device.__init__(self, mac)
         self.user_agent_string = None
         self.networks = None
+        self.bssid = None
         self.destination_ip = None
         self.uris = None
         self.os = None
@@ -60,6 +63,22 @@ class Client(Device):
         print("Remote Hosts connected to are: " + str(self.rhosts))
         print("Referers to those Hosts include: " + str(self.referers))
         print("Frames Seen are: " + str(self.frame_numbers))
+
+    def to_csv(self):
+        row = []
+        row.append(self.mac)
+        row.append(self.oui)
+        if type(self.ip) == list:
+            row.append(self.ip[0])
+        else:
+            row.append(self.ip)
+        row.append(self.bssid[0])
+        row.append(get_oui(self.bssid[0]))
+        row.append(self.networks[0])
+        row.append(AccessPointDict[self.bssid[0]].channel)
+        row.append(self.os[0])
+        row.append(self.browser[0])
+        return row
 
 
 class AccessPoint(Device):
@@ -86,11 +105,39 @@ class AccessPoint(Device):
         print("Rates include: " + str(self.rates))
         print("Frames Seen are: " + str(self.frame_numbers))
 
+    def to_csv(self):
+        row = []
+        row.append(self.mac)
+        row.append(self.oui)
+        if type(self.ip) == list:
+            row.append(self.ip[0])
+        else:
+            row.append(self.ip)
+        row.append(self.mac)
+        row.append(self.oui)
+        row.append(self.ssid)
+        row.append(self.channel)
+        row.append(' ')
+        row.append(' ')
+        return row
+
+
+def get_oui(mac):
+    with open('betterOUI', 'r') as OUI:
+        mac = str(mac).upper()
+        mac = mac.replace(':', '')
+        mac = mac[:6]
+        for line in OUI:
+            line = line.split('~')
+            if line[0] == mac:
+                return line[1].strip()
 
 # cap = rdpcap("/root/Desktop/pcaps/TAKE_THIS.pcap")
+# noinspection PyArgumentList
 cap = PcapReader("/root/Desktop/pcaps/TAKE_THIS.pcap")
 # cap = PcapReader("/root/Desktop/Small.pcap")
 print("Read Capture")
+TCP_REVERSE = dict((TCP_SERVICES[k], k) for k in TCP_SERVICES.keys())
 
 AccessPointDict = {}
 ClientDict = {}
@@ -99,7 +146,6 @@ DeviceDict = {}
 
 # noinspection PyShadowingNames
 def process_beacon(num, packet):
-    print("Processing beacon " + str(num))
     mac = packet[Dot11].addr2
     if mac in AccessPointDict:
         AccessPointDict[mac].frame_numbers.append(num)
@@ -107,58 +153,51 @@ def process_beacon(num, packet):
         AccessPointDict[mac] = AccessPoint(mac)
         ap = AccessPointDict[mac]
         ap.set_attribute('frame_numbers', num)
+        rates = []
+        layer = 1
+        while True:
+            try:
+                lay = packet[layer].ID
+                if lay == 3:
+                    ...
+                    channel = int.from_bytes(packet[layer].info, byteorder='big')
+                    ap.channel = channel
+                elif lay == 1:
+                    # Rate Info
+                    rates_bytes = bytearray(packet[layer].info)
+                    for i in rates_bytes:
+                        if i > 60:
+                            i -= 128
+                        rates.append(i / 2)
 
-        # set ssid
+                elif lay == 50:
+                    # ESRate Stuff
+                    esrates_bytes = bytearray(packet[layer].info)
+                    for i in esrates_bytes:
+                        rates.append(i / 2)
+                    ap.rates = rates
+                elif lay == 48:
+                    # Cypher Stuff
+                    arr = bytearray(packet[layer].info)
+                    if 4 in arr:
+                        ap.cypher = "AES"
+                        ap.enc = "WPA2"
+                    elif arr[5] == 2:
+                        ap.cypher = "TKIP"
+                        ap.enc = "WPA"
+                    else:
+                        ap.cypher = "RCv4"
+                        ap.enc = "OPEN or WEP"
+                elif lay == 192:
+                    ap.mode = 'AC'
+                elif lay == 45 and ap.mode is None:
+                    ap.mode = 'N'
+                layer += 1
+            except IndexError:
+                break
+
         ssid = packet[Dot11Beacon].payload.info.decode('utf-8')
         ap.set_attribute('ssid', ssid)
-
-        # set channel
-        channel = int.from_bytes(packet[4].info, byteorder='big')
-        ap.channel = channel
-
-        # find all rates and set rates
-
-        #  #Supported Rates
-        rates_bytes = bytearray(packet[3].info)
-        rates = []
-        for i in rates_bytes:
-            if i > 60:
-                i -= 128
-            rates.append(i / 2)
-
-        # #Extended Supported Rates
-        esrates_bytes = bytearray(packet[7].info)
-        for i in esrates_bytes:
-            rates.append(i / 2)
-        ap.rates = rates
-
-        # set the cypher and encrpytion
-        arr = bytearray(packet[8].info)
-        try:
-            if arr[5] == 4:
-                ap.cypher = "AES"
-                ap.enc = "WPA2"
-            elif arr[5] == 2:
-                ap.cypher = "TKIP"
-                ap.enc = "WPA"
-            else:
-                ap.cypher = "RCv4"
-                ap.enc = "OPEN or WEP"
-        except IndexError:
-            ap.cypher = "RCv4"
-            ap.enc = "OPEN or WEP"
-
-        # set mode
-        try:
-            if packet[15].ID == 192:
-                ap.mode = 'AC'
-        except IndexError:
-            pass
-        try:
-            if packet[10].ID == 45:
-                ap.mode = 'N'
-        except IndexError:
-            pass
         if ap.mode is None:
             if ap.channel > 14:
                 ap.mode = 'A'
@@ -166,11 +205,14 @@ def process_beacon(num, packet):
                 ap.mode = 'G'
             else:
                 ap.mode = 'B'
+        if ap.enc is None:
+            if ap.mode is 'N' or ap.mode is 'AC':
+                ap.enc = 'Likely WPA2'
+                ap.cypher = 'Likely AES'
 
 
 # noinspection PyShadowingNames
 def process_arp(num, packet):
-    print("Processing arp packet " + str(num))
     hwmac = packet[ARP].hwsrc
     dev = find_device(hwmac)
     op = packet[ARP].op
@@ -178,7 +220,7 @@ def process_arp(num, packet):
     if op == 2:
         dev.set_attribute('ip', ip)
         dev.set_attribute('frame_numbers', num)
-        dstmac = packet[ARP].hwdst
+        dstmac = packet[Dot11].addr1
         otherdev = find_device(dstmac)
         dstip = packet[ARP].pdst
         otherdev.ip = dstip
@@ -187,7 +229,6 @@ def process_arp(num, packet):
 
 # noinspection PyShadowingNames
 def process_http(num, packet):
-    print("Processing http packet " + str(num))
     mac = packet[Dot11].addr2
     bssid = packet[Dot11].addr1
     net = AccessPointDict[bssid].ssid
@@ -197,6 +238,7 @@ def process_http(num, packet):
         ClientDict[mac] = Client(mac)
     dev = ClientDict[mac]
     dev.set_attribute('networks', net)
+    dev.set_attribute('bssid', bssid)
     dev.set_attribute('ip', packet[IP].src)
     dev.set_attribute('destination_ip', packet[IP].dst)
 
@@ -243,16 +285,36 @@ def find_device(mac):
     return dev
 
 
-def get_oui(mac):
-    with open('betterOUI', 'r') as OUI:
-        mac = str(mac).upper()
-        mac = mac.replace(':', '')
-        mac = mac[:6]
-        for line in OUI:
-            line = line.split('~')
-            if line[0] == mac:
-                return line[1].strip()
+def write_to_csv(csvfile):
+    csvf = open(csvfile, 'w+')
+    fieldnames = ['MAC', 'OUI', 'IP', 'BSSID', 'BSSID-OUI', 'SSID', 'CHANNEL', 'OS', 'BROWSER']
+    writer = csv.writer(csvf, delimiter=',', quotechar='"')
+    writer.writerow(fieldnames)
+    rows = []
+    for k, v in AccessPointDict.items():
+        row = v.to_csv()
+        rows.append(row)
+    for k, v in ClientDict.items():
+        row = v.to_csv()
+        rows.append(row)
+    writer.writerows(rows)
+    csvf.flush()
+    csvf.close()
 
+
+portDict = {}
+
+
+def port_lookup(port, proto):
+    if port in portDict.keys():
+        return portDict[port]
+    else:
+        with open('./service-names-port-numbers.csv', 'r') as csvf:
+            c = csv.DictReader(csvf)
+            for row in c:
+                if str(row['Port Number']) == str(port):
+                    portDict[port] = row['Service Name']
+                    return row['Service Name']
 
 packet_num = 0
 for packet in cap:
@@ -264,12 +326,17 @@ for packet in cap:
     elif TCP in packet:
         if packet[TCP].dport == 80:
             process_http(packet_num, packet)
+        else:
+            p = packet[Dot11].addr2
+            print(str(p) + "sends traffic on TCP Port: " + str(packet[TCP].dport))
+            print(port_lookup(packet[TCP].dport, 'tcp'))
 
 for k, v in AccessPointDict.items():
-    v.show()
+    print(v.to_csv())
 # noinspection PyRedeclaration
 for k, v in ClientDict.items():
-    v.show()
+    print(v.to_csv())
 for k, v in DeviceDict.items():
     if (k not in AccessPointDict) and (k not in ClientDict):
         v.show()
+write_to_csv('./output')
