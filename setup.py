@@ -8,5 +8,5 @@ setup(
     license='',
     author='TheKingOfShade',
     author_email='CameronD.Barts@gmail.com',
-    description='', install_requires=['httpagentparser', 'scapy==2.4.0rc3']
+    description='', install_requires=['httpagentparser', 'scapy>=2.4.1']
 )
